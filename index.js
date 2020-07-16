@@ -2,6 +2,7 @@
 
 const assert = require("assert");
 const removeSlash = require("remove-trailing-slash");
+const looselyValidate = require("@segment/loosely-validate-event");
 const axios = require("axios");
 const axiosRetry = require("axios-retry");
 const ms = require("ms");
@@ -15,7 +16,8 @@ const noop = () => {};
 
 class Tracker {
   /**
-   * Initialize a new `Tracker` with your Windsor `token` and any custom `options`.
+   * Initialize a new `Tracker` with your Windsor `token` and an
+   * optional dictionary of `options`.
    *
    * @param {String} token
    * @param {Object} [options] (optional)
@@ -41,31 +43,33 @@ class Tracker {
       configurable: false,
       writable: false,
       enumerable: true,
-      value: typeof options.enable === "boolean" ? options.enable : true
+      value: typeof options.enable === "boolean" ? options.enable : true,
     });
 
     axiosRetry(axios, {
       retries: options.retryCount || 3,
       retryCondition: this._isErrorRetryable,
-      retryDelay: axiosRetry.exponentialDelay
+      retryDelay: axiosRetry.exponentialDelay,
     });
   }
 
   _validate(message, type) {
-    if (!message) {
-      throw new Error("You must pass a message object.");
-    }
-    if (!message.userId && !message.anonymousId) {
-      throw new Error('You must pass either an "anonymousId" or a "userId".');
-    }
-    if (type === "event" && !message.event) {
-      throw new Error('You must pass an "event".');
+    try {
+      looselyValidate(message, type);
+    } catch (e) {
+      if (e.message === "Your message must be < 32kb.") {
+        console.log(
+          "Your message must be < 32kb. This is currently surfaced as a warning to allow clients to update. Versions released after August 1, 2018 will throw an error instead. Please update your code before then.",
+          message
+        );
+        return;
+      }
+      throw e;
     }
   }
 
   /**
-   * Create a new user on Windsor.
-   * If the `id` field already exists, the user will be updated with any new data.
+   * Send a user `message`.
    *
    * @param {Object} message
    * @param {Function} [callback] (optional)
@@ -73,13 +77,13 @@ class Tracker {
    */
 
   user(message, callback) {
-    this._validate(message, "user");
+    this._validate(message, "identify");
     this.enqueue("user", message, callback);
     return this;
   }
 
   /**
-   * Track an event.
+   * Send an event `message`.
    *
    * @param {Object} message
    * @param {Function} [callback] (optional)
@@ -87,7 +91,7 @@ class Tracker {
    */
 
   event(message, callback) {
-    this._validate(message, "event");
+    this._validate(message, "track");
     this.enqueue("event", message, callback);
     return this;
   }
@@ -115,15 +119,15 @@ class Tracker {
       {
         library: {
           name: "windsor-node",
-          version
-        }
+          version,
+        },
       },
       message.context
     );
 
     message._metadata = Object.assign(
       {
-        nodeVersion: process.versions.node
+        nodeVersion: process.versions.node,
       },
       message._metadata
     );
@@ -140,6 +144,9 @@ class Tracker {
       message.messageId = `node-${md5(JSON.stringify(message))}-${uuid()}`;
     }
 
+    // Historically, the `analytics-node` library has accepted strings and numbers as IDs.
+    // However, our spec only allows strings. To avoid breaking compatibility,
+    // we'll coerce these to strings if they aren't already.
     if (message.anonymousId && !isString(message.anonymousId)) {
       message.anonymousId = JSON.stringify(message.anonymousId);
     }
@@ -188,17 +195,17 @@ class Tracker {
     }
 
     const items = this.queue.splice(0, this.flushAt);
-    const callbacks = items.map(item => item.callback);
-    const messages = items.map(item => item.message);
+    const callbacks = items.map((item) => item.callback);
+    const messages = items.map((item) => item.message);
 
     const data = {
       batch: messages,
       timestamp: new Date(),
-      sentAt: new Date()
+      sentAt: new Date(),
     };
 
-    const done = err => {
-      callbacks.forEach(callback => callback(err));
+    const done = (err) => {
+      callbacks.forEach((callback) => callback(err));
       callback(err, data);
     };
 
@@ -215,7 +222,7 @@ class Tracker {
       method: "POST",
       url: `${this.host}/${this.token}`,
       data,
-      headers
+      headers,
     };
 
     if (this.timeout) {
@@ -225,7 +232,7 @@ class Tracker {
 
     axios(req)
       .then(() => done())
-      .catch(err => {
+      .catch((err) => {
         if (err.response) {
           const error = new Error(err.response.statusText);
           return done(error);

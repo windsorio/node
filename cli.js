@@ -5,11 +5,11 @@ const program = require("commander");
 const Tracker = require(".");
 const pkg = require("./package");
 
-const toObject = str => JSON.parse(str);
+const toObject = (str) => JSON.parse(str);
 
 program
   .version(pkg.version)
-  .option("-w, --token <token>", "the Windsor token to use")
+  .option("-t, --token <token>", "the Windsor token to use")
   .option("-h, --host <host>", "the Windsor API hostname to use")
   .option("-t, --type <type>", "the Windsor message type")
 
@@ -57,7 +57,7 @@ const traits = program.traits;
 
 const run = (method, args) => {
   const windsor = new Tracker(token, { host, flushAt: 1 });
-  windsor[method](args, err => {
+  windsor[method](args, (err) => {
     if (err) {
       console.error(err.stack);
       process.exit(1);
@@ -73,7 +73,6 @@ switch (type) {
       userId,
       anonymousId,
       context,
-      integrations
     });
     break;
   case "user":
@@ -82,7 +81,6 @@ switch (type) {
       userId,
       anonymousId,
       context,
-      integrations
     });
     break;
   default:
