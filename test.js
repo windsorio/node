@@ -377,27 +377,33 @@ test("flush - skip when client is disabled", async (t) => {
   t.false(callback.called);
 });
 
-test("user - enqueue a message", (t) => {
+test("user - enqueue a message", async (t) => {
   const client = createClient();
   stub(client, "enqueue");
 
   const message = { userId: "id" };
-  client.user(message, noop);
+  await client.user(message);
 
   t.true(client.enqueue.calledOnce);
-  t.deepEqual(client.enqueue.firstCall.args, ["user", message, noop]);
+
+  const args = client.enqueue.firstCall.args;
+  t.is(args[0], "user");
+  t.is(args[1], message);
+  t.truthy(typeof args[2] === "function");
 });
 
-test("user - require a userId or anonymousId", (t) => {
+test("user - require a userId or anonymousId", async (t) => {
   const client = createClient();
   stub(client, "enqueue");
 
-  t.throws(() => client.user(), { message: "You must pass a message object." });
-  t.throws(() => client.user({}), {
+  await t.throwsAsync(() => client.user(), {
+    message: "You must pass a message object.",
+  });
+  await t.throwsAsync(() => client.user({}), {
     message: 'You must pass either an "anonymousId" or a "userId".',
   });
-  t.notThrows(() => client.user({ userId: "id" }));
-  t.notThrows(() => client.user({ anonymousId: "id" }));
+  await t.notThrowsAsync(() => client.user({ userId: "id" }));
+  await t.notThrowsAsync(() => client.user({ anonymousId: "id" }));
 });
 
 test.skip("group - enqueue a message", (t) => {
@@ -446,7 +452,7 @@ test.skip("group - require a groupId and either userId or anonymousId", (t) => {
   });
 });
 
-test("event - enqueue a message", (t) => {
+test("event - enqueue a message", async (t) => {
   const client = createClient();
   stub(client, "enqueue");
 
@@ -455,41 +461,45 @@ test("event - enqueue a message", (t) => {
     event: "event",
   };
 
-  client.event(message, noop);
+  await client.event(message);
 
   t.true(client.enqueue.calledOnce);
-  t.deepEqual(client.enqueue.firstCall.args, ["event", message, noop]);
+
+  const args = client.enqueue.firstCall.args;
+  t.is(args[0], "event");
+  t.is(args[1], message);
+  t.truthy(typeof args[2] === "function");
 });
 
-test("event - require event and either userId or anonymousId", (t) => {
+test("event - require event and either userId or anonymousId", async (t) => {
   const client = createClient();
   stub(client, "enqueue");
 
-  t.throws(() => client.event(), {
+  await t.throwsAsync(() => client.event(), {
     message: "You must pass a message object.",
   });
-  t.throws(() => client.event({}), {
+  await t.throwsAsync(() => client.event({}), {
     message: 'You must pass either an "anonymousId" or a "userId".',
   });
-  t.throws(() => client.event({ userId: "id" }), {
+  await t.throwsAsync(() => client.event({ userId: "id" }), {
     message: 'You must pass an "event".',
   });
-  t.throws(() => client.event({ anonymousId: "id" }), {
+  await t.throwsAsync(() => client.event({ anonymousId: "id" }), {
     message: 'You must pass an "event".',
   });
-  t.notThrows(() => {
+  await t.notThrowsAsync(() =>
     client.event({
       userId: "id",
       event: "event",
-    });
-  });
+    })
+  );
 
-  t.notThrows(() => {
+  await t.notThrowsAsync(() =>
     client.event({
       anonymousId: "id",
       event: "event",
-    });
-  });
+    })
+  );
 });
 
 test.skip("page - enqueue a message", (t) => {

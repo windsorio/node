@@ -26,7 +26,6 @@ class Tracker {
    *   @property {String} host (default: 'https://hook.windsor.io')
    *   @property {Boolean} enable (default: true)
    */
-
   constructor(token, options) {
     options = options || {};
 
@@ -54,46 +53,41 @@ class Tracker {
   }
 
   _validate(message, type) {
-    try {
-      looselyValidate(message, type);
-    } catch (e) {
-      if (e.message === "Your message must be < 32kb.") {
-        console.log(
-          "Your message must be < 32kb. This is currently surfaced as a warning to allow clients to update. Versions released after August 1, 2018 will throw an error instead. Please update your code before then.",
-          message
-        );
-        return;
-      }
-      throw e;
-    }
+    return looselyValidate(message, type);
   }
 
   /**
    * Send a user `message`.
    *
    * @param {Object} message
-   * @param {Function} [callback] (optional)
-   * @return {Tracker}
+   * @return {Promise<void>}
    */
-
-  user(message, callback) {
-    this._validate(message, "identify");
-    this.enqueue("user", message, callback);
-    return this;
+  user(message) {
+    return new Promise((res, rej) => {
+      try {
+        this._validate(message, "identify");
+      } catch (e) {
+        return rej(e);
+      }
+      this.enqueue("user", message, (err) => (err ? rej(err) : res));
+    });
   }
 
   /**
    * Send an event `message`.
    *
    * @param {Object} message
-   * @param {Function} [callback] (optional)
-   * @return {Tracker}
+   * @return {Promise<void>}
    */
-
-  event(message, callback) {
-    this._validate(message, "track");
-    this.enqueue("event", message, callback);
-    return this;
+  event(message) {
+    return new Promise((res, rej) => {
+      try {
+        this._validate(message, "track");
+      } catch (e) {
+        return rej(e);
+      }
+      this.enqueue("event", message, (err) => (err ? rej(err) : res));
+    });
   }
 
   /**
@@ -105,7 +99,6 @@ class Tracker {
    * @param {Function} [callback] (optional)
    * @api private
    */
-
   enqueue(type, message, callback) {
     callback = callback || noop;
 
@@ -174,72 +167,70 @@ class Tracker {
   /**
    * Flush the current queue
    *
-   * @param {Function} [callback] (optional)
-   * @return {Tracker}
+   * @return {Promise<{ batch: Array<object>, timestamp: Date, sentAt: Date }>}
    */
+  flush() {
+    return new Promise((res, rej) => {
+      if (!this.enable) {
+        return setImmediate(res);
+      }
 
-  flush(callback) {
-    callback = callback || noop;
+      if (this.timer) {
+        clearTimeout(this.timer);
+        this.timer = null;
+      }
 
-    if (!this.enable) {
-      return setImmediate(callback);
-    }
+      if (!this.queue.length) {
+        return setImmediate(res);
+      }
 
-    if (this.timer) {
-      clearTimeout(this.timer);
-      this.timer = null;
-    }
+      const items = this.queue.splice(0, this.flushAt);
+      const callbacks = items.map((item) => item.callback);
+      const messages = items.map((item) => item.message);
 
-    if (!this.queue.length) {
-      return setImmediate(callback);
-    }
+      const data = {
+        batch: messages,
+        timestamp: new Date(),
+        sentAt: new Date(),
+      };
 
-    const items = this.queue.splice(0, this.flushAt);
-    const callbacks = items.map((item) => item.callback);
-    const messages = items.map((item) => item.message);
+      const done = (err) => {
+        callbacks.forEach((callback) => callback(err));
+        err ? rej(err) : res(data);
+      };
 
-    const data = {
-      batch: messages,
-      timestamp: new Date(),
-      sentAt: new Date(),
-    };
+      // Don't set the user agent if we're not on a browser. The latest spec allows
+      // the User-Agent header (see https://fetch.spec.whatwg.org/#terminology-headers
+      // and https://developer.mozilla.org/en-US/docs/Web/API/XMLHttpRequest/setRequestHeader),
+      // but browsers such as Chrome and Safari have not caught up.
+      const headers = {};
+      if (typeof window === "undefined") {
+        headers["user-agent"] = `windsor-node/${version}`;
+      }
 
-    const done = (err) => {
-      callbacks.forEach((callback) => callback(err));
-      callback(err, data);
-    };
+      const req = {
+        method: "POST",
+        url: `${this.host}/${this.token}`,
+        data,
+        headers,
+      };
 
-    // Don't set the user agent if we're not on a browser. The latest spec allows
-    // the User-Agent header (see https://fetch.spec.whatwg.org/#terminology-headers
-    // and https://developer.mozilla.org/en-US/docs/Web/API/XMLHttpRequest/setRequestHeader),
-    // but browsers such as Chrome and Safari have not caught up.
-    const headers = {};
-    if (typeof window === "undefined") {
-      headers["user-agent"] = `windsor-node/${version}`;
-    }
+      if (this.timeout) {
+        req.timeout =
+          typeof this.timeout === "string" ? ms(this.timeout) : this.timeout;
+      }
 
-    const req = {
-      method: "POST",
-      url: `${this.host}/${this.token}`,
-      data,
-      headers,
-    };
+      axios(req)
+        .then(() => done())
+        .catch((err) => {
+          if (err.response) {
+            const error = new Error(err.response.statusText);
+            return done(error);
+          }
 
-    if (this.timeout) {
-      req.timeout =
-        typeof this.timeout === "string" ? ms(this.timeout) : this.timeout;
-    }
-
-    axios(req)
-      .then(() => done())
-      .catch((err) => {
-        if (err.response) {
-          const error = new Error(err.response.statusText);
-          return done(error);
-        }
-
-        done(err);
-      });
+          done(err);
+        });
+    });
   }
 
   _isErrorRetryable(error) {
