@@ -26,8 +26,8 @@
     "dependencies": "yarn",
     "size": "size-limit",
     "build": "echo no build step",
-    "lint": "prettier './**/*' -c",
-    "test": "prettier --check ./*.js && nyc ava && .buildscript/e2e.sh",
+    "lint": "prettier './*.js' -c",
+    "test": "prettier './*.js' -c && nyc ava && .buildscript/e2e.sh",
     "report-coverage": "nyc report --reporter=lcov > coverage.lcov && codecov",
     "np": "np --no-publish",
     "release": "yarn run np"
@@ -47,24 +47,24 @@
   "dependencies": {
     "@segment/loosely-validate-event": "2.0.0",
     "axios": "0.19.2",
-    "axios-retry": "3.0.2",
+    "axios-retry": "3.1.8",
     "lodash.isstring": "4.0.1",
     "md5": "2.2.1",
     "ms": "2.1.2",
     "remove-trailing-slash": "0.1.0",
-    "uuid": "8.1.0"
+    "uuid": "8.2.0"
   },
   "devDependencies": {
-    "ava": "0.25.0",
+    "ava": "3.10.1",
     "basic-auth": "2.0.1",
     "body-parser": "1.19.0",
-    "codecov": "3.6.5",
-    "commander": "2.20.3",
+    "codecov": "3.7.0",
+    "commander": "5.1.0",
     "delay": "4.3.0",
     "express": "4.17.1",
-    "nyc": "15.0.1",
+    "nyc": "15.1.0",
     "pify": "5.0.0",
     "prettier": "2.0.5",
-    "sinon": "7.5.0"
+    "sinon": "9.0.2"
   }
 }
