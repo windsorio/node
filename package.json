@@ -3,6 +3,7 @@
   "version": "0.1.0",
   "description": "Integrate user and event capture with Node applications",
   "license": "MIT",
+  "repository": "windsorio/node",
   "author": {
     "name": "Windsor",
     "email": "team@windsor.io",
