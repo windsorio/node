@@ -81,7 +81,7 @@ windsor.event({
 });
 ```
 
-## License
+## Documentation
 
 Documentation is available at [https://docs.windsor.io/docs/analytics](https://docs.windsor.io/docs/analytics)
 
