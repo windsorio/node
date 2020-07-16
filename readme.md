@@ -57,7 +57,7 @@ Then follow the user on [Windsor](https://windsor.io)
 ## Installation
 
 ```bash
-$ yarn add windsor-node --save
+$ yarn add windsor-node
 ```
 
 ## Usage
