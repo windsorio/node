@@ -1,4 +1,4 @@
-# windsor-node
+# windsor-node [![CircleCI](https://circleci.com/gh/windsorio/node.svg?style=svg)](https://circleci.com/gh/windsorio/node)
 
 Send data for [Windsor.io](https://windsor.io) from Node
 
