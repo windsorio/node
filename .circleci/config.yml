@@ -32,10 +32,11 @@ workflows:
       - coverage:
           requires:
             - test
-      - snyk:
-          context: snyk
-          requires:
-            - test
+      ## This doesn't work right now because of a yarn.lock parsing issue
+      # - snyk:
+      #     context: snyk
+      #     requires:
+      #       - test
   scheduled_e2e_test:
     triggers:
       - schedule:
