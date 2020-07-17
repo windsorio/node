@@ -32,6 +32,7 @@ class Tracker {
     assert(token, "You must pass your Windsor token.");
 
     this.queue = [];
+    this.pendingBatches = new Set();
     this.token = token;
     this.host = removeSlash(options.host || "https://hook.windsor.io");
     this.timeout = options.timeout || false;
@@ -50,6 +51,8 @@ class Tracker {
       retryCondition: this._isErrorRetryable,
       retryDelay: axiosRetry.exponentialDelay,
     });
+
+    this.flush = this.flush.bind(this);
   }
 
   _validate(message, type) {
@@ -69,7 +72,7 @@ class Tracker {
       } catch (e) {
         return rej(e);
       }
-      this.enqueue("user", message, (err) => (err ? rej(err) : res));
+      this.enqueue("user", message, (err) => (err ? rej(err) : res()));
     });
   }
 
@@ -86,7 +89,7 @@ class Tracker {
       } catch (e) {
         return rej(e);
       }
-      this.enqueue("event", message, (err) => (err ? rej(err) : res));
+      this.enqueue("event", message, (err) => (err ? rej(err) : res()));
     });
   }
 
@@ -170,67 +173,103 @@ class Tracker {
    * @return {Promise<{ batch: Array<object>, timestamp: Date, sentAt: Date }>}
    */
   flush() {
-    return new Promise((res, rej) => {
-      if (!this.enable) {
-        return setImmediate(res);
-      }
+    const pendingPromises = Array.from(this.pendingBatches);
 
-      if (this.timer) {
-        clearTimeout(this.timer);
-        this.timer = null;
-      }
+    const items = this.queue.splice(0, this.flushAt);
+    const callbacks = items.map((item) => item.callback);
 
-      if (!this.queue.length) {
-        return setImmediate(res);
-      }
-
-      const items = this.queue.splice(0, this.flushAt);
-      const callbacks = items.map((item) => item.callback);
-      const messages = items.map((item) => item.message);
-
+    const pendingPromise = new Promise(async (res, rej) => {
       const data = {
-        batch: messages,
+        batch: [],
         timestamp: new Date(),
         sentAt: new Date(),
       };
 
-      const done = (err) => {
-        callbacks.forEach((callback) => callback(err));
-        err ? rej(err) : res(data);
-      };
-
-      // Don't set the user agent if we're not on a browser. The latest spec allows
-      // the User-Agent header (see https://fetch.spec.whatwg.org/#terminology-headers
-      // and https://developer.mozilla.org/en-US/docs/Web/API/XMLHttpRequest/setRequestHeader),
-      // but browsers such as Chrome and Safari have not caught up.
-      const headers = {};
-      if (typeof window === "undefined") {
-        headers["user-agent"] = `windsor-node/${version}`;
-      }
-
-      const req = {
-        method: "POST",
-        url: `${this.host}/${this.token}`,
-        data,
-        headers,
-      };
-
-      if (this.timeout) {
-        req.timeout =
-          typeof this.timeout === "string" ? ms(this.timeout) : this.timeout;
-      }
-
-      axios(req)
-        .then(() => done())
-        .catch((err) => {
-          if (err.response) {
-            const error = new Error(err.response.statusText);
-            return done(error);
-          }
-
-          done(err);
+      if (!this.enable) {
+        return setImmediate(() => {
+          res(data);
+          this.pendingBatches.delete(pendingPromise);
         });
+      }
+
+      const done = async (err) => {
+        callbacks.forEach((callback) => callback(err));
+        // if previous batches had failed, emit the failure here this
+        // promise resolves immediately since we already waited on it
+        // earlier
+        try {
+          await Promise.all(pendingPromises);
+          err ? rej(err) : res(data);
+        } catch (err) {
+          rej(err);
+        }
+        this.pendingBatches.delete(pendingPromise);
+      };
+
+      try {
+        if (this.timer) {
+          clearTimeout(this.timer);
+          this.timer = null;
+        }
+
+        const resolvePreviousBatches = await Promise.all(
+          // previous failing batches shouldn't cause this flush to exit early
+          pendingPromises.map((p) =>
+            p.catch(() => ({
+              batch: [],
+            }))
+          )
+        );
+        if (resolvePreviousBatches.length > 0) {
+          const allPrevMessages = [
+            ...[].concat(...resolvePreviousBatches.map((b) => b.batch)),
+          ];
+          // dedupe message objects
+          data.batch.push(...Array.from(new Set(allPrevMessages)));
+        }
+        data.batch.push(...items.map((item) => item.message));
+
+        if (!items.length) {
+          return setImmediate(() => done());
+        }
+
+        // Don't set the user agent if we're not on a browser. The latest spec allows
+        // the User-Agent header (see https://fetch.spec.whatwg.org/#terminology-headers
+        // and https://developer.mozilla.org/en-US/docs/Web/API/XMLHttpRequest/setRequestHeader),
+        // but browsers such as Chrome and Safari have not caught up.
+        const headers = {};
+        if (typeof window === "undefined") {
+          headers["user-agent"] = `windsor-node/${version}`;
+        }
+
+        const req = {
+          method: "POST",
+          url: `${this.host}/${this.token}`,
+          data,
+          headers,
+        };
+
+        if (this.timeout) {
+          req.timeout =
+            typeof this.timeout === "string" ? ms(this.timeout) : this.timeout;
+        }
+
+        axios(req)
+          .then(() => done())
+          .catch((err) => {
+            if (err.response) {
+              const error = new Error(err.response.statusText);
+              return done(error);
+            }
+
+            done(err);
+          });
+      } catch (e) {
+        done(e);
+      }
     });
+    this.pendingBatches.add(pendingPromise);
+    return pendingPromise;
   }
 
   _isErrorRetryable(error) {

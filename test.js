@@ -2,12 +2,12 @@ const { spy, stub } = require("sinon");
 const bodyParser = require("body-parser");
 const express = require("express");
 const delay = require("delay");
-const pify = require("pify");
 const test = require("ava");
 const Tracker = require(".");
 const { version } = require("./package");
 
 const noop = () => {};
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 const context = {
   library: {
@@ -28,8 +28,6 @@ const createClient = (options) => {
   );
 
   const client = new Tracker("token", options);
-  client.flush = pify(client.flush.bind(client));
-  client.flushed = true;
 
   return client;
 };
@@ -54,14 +52,14 @@ test.before.cb((t) => {
         });
       }
 
-      if (batch[0] === "error") {
+      if (batch[0].type === "error") {
         return res.status(400).json({
           error: { message: "error" },
         });
       }
 
-      if (batch[0] === "timeout") {
-        return setTimeout(() => res.end(), 5000);
+      if (batch[0].type === "timeout") {
+        return setTimeout(() => res.end(), batch[0].timeout || 5000);
       }
 
       res.json({});
@@ -120,6 +118,7 @@ test("keep the flushAt option above zero", (t) => {
 
 test("enqueue - add a message to the queue", (t) => {
   const client = createClient();
+  client.flushed = true;
 
   const timestamp = new Date();
   client.enqueue("type", { timestamp }, noop);
@@ -144,6 +143,7 @@ test("enqueue - add a message to the queue", (t) => {
 
 test("enqueue - stringify userId", (t) => {
   const client = createClient();
+  client.flushed = true;
 
   client.event(
     {
@@ -163,6 +163,7 @@ test("enqueue - stringify userId", (t) => {
 
 test("enqueue - stringify anonymousId", (t) => {
   const client = createClient();
+  client.flushed = true;
 
   client.event(
     {
@@ -184,6 +185,7 @@ test("enqueue - stringify anonymousId", (t) => {
 
 test("enqueue - stringify ids handles strings", (t) => {
   const client = createClient();
+  client.flushed = true;
 
   client.event(
     {
@@ -215,7 +217,7 @@ test("enqueue - don't modify the original message", (t) => {
 
 test("enqueue - flush on first message", (t) => {
   const client = createClient({ flushAt: 2 });
-  client.flushed = false;
+
   spy(client, "flush");
 
   client.enqueue("type", {});
@@ -245,10 +247,11 @@ test("enqueue - flush after a period of time", async (t) => {
   const client = createClient({ flushInterval: 10 });
   stub(client, "flush");
 
+  client.flushed = true; // skip initial flush
   client.enqueue("type", {});
 
   t.false(client.flush.called);
-  await delay(20);
+  await sleep(20);
 
   t.true(client.flush.calledOnce);
 });
@@ -267,6 +270,7 @@ test("enqueue - don't reset an existing timer", async (t) => {
 
 test("enqueue - extend context", (t) => {
   const client = createClient();
+  client.flushed = true;
 
   client.enqueue(
     "type",
@@ -339,7 +343,7 @@ test("flush - respond with an error", async (t) => {
 
   client.queue = [
     {
-      message: "error",
+      message: { type: "error" },
       callback,
     },
   ];
@@ -353,7 +357,7 @@ test("flush - time out if configured", async (t) => {
 
   client.queue = [
     {
-      message: "timeout",
+      message: { type: "timeout", timeout: 1000 },
       callback,
     },
   ];
@@ -377,9 +381,81 @@ test("flush - skip when client is disabled", async (t) => {
   t.false(callback.called);
 });
 
-test("user - enqueue a message", async (t) => {
+test("flush - race condition - https://github.com/segmentio/analytics-node/issues/219", async (t) => {
+  const client = createClient({ flushAt: 1 });
+  const callback = spy();
+
+  client.enqueue("timeout", { timeout: 200, a: "b" }, callback);
+
+  const { batch } = await client.flush();
+
+  t.true(callback.calledOnce);
+  t.truthy(batch[0]);
+  t.is(batch[0].type, "timeout");
+  t.is(batch[0].timeout, 200);
+  t.is(batch[0].a, "b");
+});
+
+test("flush - race condition 2", async (t) => {
   const client = createClient();
-  stub(client, "enqueue");
+  const callbackA = spy();
+  const callbackB = spy();
+  const callbackC = spy();
+
+  let flushA, flushB, flushC;
+  client.enqueue("timeout", { timeout: 200, a: "b" }, callbackA);
+  flushA = client.flush();
+  client.enqueue("timeout", { timeout: 200, c: "d" }, callbackB);
+  flushB = client.flush();
+  client.enqueue("timeout", { timeout: 200, e: "f" }, callbackC);
+  flushC = client.flush();
+
+  // wait for the promises
+  await sleep(100);
+  await flushC;
+
+  t.true(callbackA.calledOnce);
+  t.true(callbackB.calledOnce);
+  t.true(callbackC.calledOnce);
+
+  t.is((await flushA).batch.length, 1);
+  t.is((await flushB).batch.length, 2);
+  t.is((await flushC).batch.length, 3);
+
+  // Previous batches should be clear. This one should only have 1 message
+  const callbackD = spy();
+  client.enqueue("timeout", { timeout: 200, g: "h" }, callbackD);
+  const flushD = client.flush();
+  const { batch } = await flushD;
+
+  t.true(callbackD.calledOnce);
+  t.is(batch.length, 1);
+});
+
+test("flush - race condition with errors", async (t) => {
+  const client = createClient();
+  const callbackA = spy();
+  const callbackB = spy();
+
+  let flushA, flushB;
+  client.enqueue("error", { a: "b" }, callbackA);
+  flushA = client.flush();
+  client.enqueue("timeout", { timeout: 200, c: "d" }, callbackB);
+  flushB = client.flush();
+
+  // wait for the promises to fire
+  await sleep(100);
+
+  await t.throwsAsync(() => flushA);
+  await t.throwsAsync(() => flushB);
+
+  t.true(callbackA.calledOnce);
+  t.true(callbackB.calledOnce);
+});
+
+test("user - enqueue a message", async (t) => {
+  const client = createClient({ flushAt: 1 });
+  client.enqueue = spy((_a, _b, cb) => cb());
 
   const message = { userId: "id" };
   await client.user(message);
@@ -394,7 +470,7 @@ test("user - enqueue a message", async (t) => {
 
 test("user - require a userId or anonymousId", async (t) => {
   const client = createClient();
-  stub(client, "enqueue");
+  client.enqueue = spy((_a, _b, cb) => cb());
 
   await t.throwsAsync(() => client.user(), {
     message: "You must pass a message object.",
@@ -408,7 +484,7 @@ test("user - require a userId or anonymousId", async (t) => {
 
 test.skip("group - enqueue a message", (t) => {
   const client = createClient();
-  stub(client, "enqueue");
+  client.enqueue = spy((_a, _b, cb) => cb());
 
   const message = {
     groupId: "id",
@@ -423,7 +499,7 @@ test.skip("group - enqueue a message", (t) => {
 
 test.skip("group - require a groupId and either userId or anonymousId", (t) => {
   const client = createClient();
-  stub(client, "enqueue");
+  client.enqueue = spy((_a, _b, cb) => cb());
 
   t.throws(() => client.group(), {
     message: "You must pass a message object.",
@@ -454,7 +530,7 @@ test.skip("group - require a groupId and either userId or anonymousId", (t) => {
 
 test("event - enqueue a message", async (t) => {
   const client = createClient();
-  stub(client, "enqueue");
+  client.enqueue = spy((_a, _b, cb) => cb());
 
   const message = {
     userId: 1,
@@ -473,7 +549,7 @@ test("event - enqueue a message", async (t) => {
 
 test("event - require event and either userId or anonymousId", async (t) => {
   const client = createClient();
-  stub(client, "enqueue");
+  client.enqueue = spy((_a, _b, cb) => cb());
 
   await t.throwsAsync(() => client.event(), {
     message: "You must pass a message object.",
@@ -504,7 +580,7 @@ test("event - require event and either userId or anonymousId", async (t) => {
 
 test.skip("page - enqueue a message", (t) => {
   const client = createClient();
-  stub(client, "enqueue");
+  client.enqueue = spy((_a, _b, cb) => cb());
 
   const message = { userId: "id" };
   client.page(message, noop);
@@ -515,7 +591,7 @@ test.skip("page - enqueue a message", (t) => {
 
 test.skip("page - require either userId or anonymousId", (t) => {
   const client = createClient();
-  stub(client, "enqueue");
+  client.enqueue = spy((_a, _b, cb) => cb());
 
   t.throws(() => client.page(), { message: "You must pass a message object." });
   t.throws(() => client.page({}), {
@@ -527,7 +603,7 @@ test.skip("page - require either userId or anonymousId", (t) => {
 
 test.skip("screen - enqueue a message", (t) => {
   const client = createClient();
-  stub(client, "enqueue");
+  client.enqueue = spy((_a, _b, cb) => cb());
 
   const message = { userId: "id" };
   client.screen(message, noop);
@@ -538,7 +614,7 @@ test.skip("screen - enqueue a message", (t) => {
 
 test.skip("screen - require either userId or anonymousId", (t) => {
   const client = createClient();
-  stub(client, "enqueue");
+  client.enqueue = spy((_a, _b, cb) => cb());
 
   t.throws(() => client.screen(), {
     message: "You must pass a message object.",
@@ -552,7 +628,7 @@ test.skip("screen - require either userId or anonymousId", (t) => {
 
 test.skip("alias - enqueue a message", (t) => {
   const client = createClient();
-  stub(client, "enqueue");
+  client.enqueue = spy((_a, _b, cb) => cb());
 
   const message = {
     userId: "id",
@@ -567,7 +643,7 @@ test.skip("alias - enqueue a message", (t) => {
 
 test.skip("alias - require previousId and userId", (t) => {
   const client = createClient();
-  stub(client, "enqueue");
+  client.enqueue = spy((_a, _b, cb) => cb());
 
   t.throws(() => client.alias(), {
     message: "You must pass a message object.",
@@ -601,7 +677,7 @@ test("isErrorRetryable", (t) => {
   t.false(client._isErrorRetryable({ response: { status: 200 } }));
 });
 
-test("allows messages > 32kb", (t) => {
+test("disallows messages > 32kb", async (t) => {
   const client = createClient();
 
   const event = {
@@ -613,7 +689,5 @@ test("allows messages > 32kb", (t) => {
     event.properties[i] = "a";
   }
 
-  t.notThrows(() => {
-    client.event(event, noop);
-  });
+  await t.throwsAsync(() => client.event(event));
 });
